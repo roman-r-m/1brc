@@ -188,7 +188,7 @@ public class CalculateAverage_roman_r_m {
         @Override
         public String toString() {
             var bytes = new byte[len];
-            MemorySegment.copy(ms, ValueLayout.JAVA_BYTE, offset, bytes, 0, len);
+            UNSAFE.copyMemory(null, ms.address() + offset, bytes, Unsafe.ARRAY_BYTE_BASE_OFFSET, len);
             return new String(bytes, 0, len);
         }
 
