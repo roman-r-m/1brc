@@ -24,9 +24,6 @@ import java.lang.foreign.ValueLayout;
 import java.lang.reflect.Field;
 import java.nio.channels.FileChannel;
 import java.nio.file.Paths;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.Map;
 import java.util.TreeMap;
 import java.util.stream.IntStream;
 
@@ -34,6 +31,7 @@ public class CalculateAverage_roman_r_m {
 
     public static final int DOT_3_RD_BYTE_MASK = (byte) '.' << 16;
     private static final String FILE = "./measurements.txt";
+    // private static final String FILE = "./src/test/resources/samples/measurements-3.txt";
     private static MemorySegment ms;
 
     private static Unsafe UNSAFE;
@@ -170,6 +168,8 @@ public class CalculateAverage_roman_r_m {
                         a.sum += val;
                         a.count++;
                     }
+
+                    // System.out.println(STR."Thread \{i}, misses=\{resultStore.misses}/\{resultStore.calls} \{((double) resultStore.misses) / resultStore.calls}");
                     return resultStore.toMap();
                 }).reduce((m1, m2) -> {
                     m2.forEach((k, v) -> m1.merge(k, v, ResultRow::merge));
@@ -236,10 +236,9 @@ public class CalculateAverage_roman_r_m {
         @Override
         public int hashCode() {
             if (hash == 0) {
-                // not sure why but it seems to be working a bit better
-                hash = UNSAFE.getInt(ms.address() + offset);
-                hash = hash >>> (8 * Math.max(0, 4 - len));
-                hash |= len;
+                long h = UNSAFE.getLong(ms.address() + offset);
+                h = Long.reverseBytes(h) >>> (8 * Math.max(0, 8 - len));
+                hash = (int) (h ^ (h >>> 32));
             }
             return hash;
         }
@@ -269,25 +268,47 @@ public class CalculateAverage_roman_r_m {
     }
 
     static class ResultStore {
-        private final ArrayList<ResultRow> results = new ArrayList<>(10000);
-        private final Map<ByteString, Integer> indices = new HashMap<>(10000);
+        private static final int SIZE = 16384;
+        private final ByteString[] keys = new ByteString[SIZE];
+        private final ResultRow[] values = new ResultRow[SIZE];
+
+        // private long calls = 0;
+        // private long misses = 0;
 
         ResultRow get(ByteString s) {
-            var idx = indices.get(s);
-            if (idx != null) {
-                return results.get(idx);
+            int h = s.hashCode();
+            int idx = (SIZE - 1) & h;
+
+            int i = 0;
+            // int miss = 0;
+            while (keys[idx] != null && !keys[idx].equals(s)) {
+                // miss = 1;
+                i++;
+                idx = (idx + i * i) % SIZE;
+            }
+            ResultRow result;
+            if (keys[idx] == null) {
+                keys[idx] = s.copy();
+                result = new ResultRow();
+                values[idx] = result;
             }
             else {
-                ResultRow next = new ResultRow();
-                results.add(next);
-                indices.put(s.copy(), results.size() - 1);
-                return next;
+                result = values[idx];
+                // TODO see it it makes any difference
+                // keys[idx].offset = s.offset;
             }
+            // calls++;
+            // misses += miss;
+            return result;
         }
 
         TreeMap<String, ResultRow> toMap() {
             var result = new TreeMap<String, ResultRow>();
-            indices.forEach((name, idx) -> result.put(name.toString(), results.get(idx)));
+            for (int i = 0; i < SIZE; i++) {
+                if (keys[i] != null) {
+                    result.put(keys[i].toString(), values[i]);
+                }
+            }
             return result;
         }
     }
