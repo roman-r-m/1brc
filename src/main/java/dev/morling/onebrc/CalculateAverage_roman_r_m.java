@@ -29,9 +29,8 @@ import java.util.stream.IntStream;
 
 public class CalculateAverage_roman_r_m {
 
-    public static final int DOT_3_RD_BYTE_MASK = (byte) '.' << 16;
     private static final String FILE = "./measurements.txt";
-    // private static final String FILE = "./src/test/resources/samples/measurements-3.txt";
+    // private static final String FILE = "./src/test/resources/samples/measurements-10000-unique-keys.txt";
     private static MemorySegment ms;
 
     private static Unsafe UNSAFE;
@@ -56,6 +55,11 @@ public class CalculateAverage_roman_r_m {
         long xor = l ^ mask;
         long match = hasZeroByte(xor);
         return match != 0 ? firstSetByteIndex(match) : -1;
+    }
+
+    static int reverseBytes(int value) {
+        return (value & 0x000000FF) << 24 | (value & 0x0000FF00) << 8 |
+                (value & 0x00FF0000) >> 8 | (value & 0xFF000000) >> 24;
     }
 
     static long nextNewline(long from) {
@@ -123,31 +127,22 @@ public class CalculateAverage_roman_r_m {
                         offset++;
 
                         long val;
-                        boolean neg;
+                        boolean neg = UNSAFE.getByte(ms.address() + offset) == '-';
+                        offset += neg ? 1 : 0;
+
                         if (!lastChunk || fileSize - offset >= 8) {
                             long encodedVal = UNSAFE.getLong(ms.address() + offset);
-                            neg = (encodedVal & (byte) '-') == (byte) '-';
-                            if (neg) {
-                                encodedVal >>= 8;
-                                offset++;
-                            }
 
-                            if ((encodedVal & DOT_3_RD_BYTE_MASK) == DOT_3_RD_BYTE_MASK) {
-                                val = (encodedVal & 0xFF - 0x30) * 100 + (encodedVal >> 8 & 0xFF - 0x30) * 10 + (encodedVal >> 24 & 0xFF - 0x30);
-                                offset += 5;
-                            }
-                            else {
-                                // based on http://0x80.pl/articles/simd-parsing-int-sequences.html#parsing-and-conversion-of-signed-numbers
-                                val = Long.compress(encodedVal, 0xFF00FFL) - 0x303030;
-                                val = ((val * 2561) >> 8) & 0xff;
-                                offset += 4;
-                            }
+                            // neg =
+                            var lineEnd = find(encodedVal, LINE_END_MASK);
+                            long mask = (1L << (8 * lineEnd)) - 1;
+                            mask ^= 0xFFL << (8 * (lineEnd - 2));
+                            encodedVal = Long.compress(encodedVal ^ broadcast((byte) 0x30), mask);
+                            long numbers2 = reverseBytes((int) encodedVal) >> (8 * (4 - lineEnd + 1));
+                            val = (numbers2 & 0xFF) + 10 * ((numbers2 >> 8) & 0xFF) + 100 * ((numbers2 >> 16) & 0xFF);
+                            offset += lineEnd + 1;
                         }
                         else {
-                            neg = UNSAFE.getByte(ms.address() + offset) == '-';
-                            if (neg) {
-                                offset++;
-                            }
                             val = UNSAFE.getByte(ms.address() + offset++) - '0';
                             byte b;
                             while ((b = UNSAFE.getByte(ms.address() + offset++)) != '.') {
