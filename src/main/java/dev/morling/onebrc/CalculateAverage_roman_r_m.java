@@ -30,8 +30,6 @@ import java.util.stream.IntStream;
 public class CalculateAverage_roman_r_m {
 
     private static final String FILE = "./measurements.txt";
-    // private static final String FILE = "./src/test/resources/samples/measurements-10000-unique-keys.txt";
-    private static MemorySegment ms;
 
     private static Unsafe UNSAFE;
 
@@ -62,7 +60,7 @@ public class CalculateAverage_roman_r_m {
                 (value & 0x00FF0000) >> 8 | (value & 0xFF000000) >> 24;
     }
 
-    static long nextNewline(long from) {
+    static long nextNewline(long from, MemorySegment ms) {
         long start = from;
         long i;
         long next = ms.get(ValueLayout.JAVA_LONG_UNALIGNED, start);
@@ -73,6 +71,102 @@ public class CalculateAverage_roman_r_m {
         return start + i;
     }
 
+    static class Worker {
+        private final MemorySegment ms;
+        private final long end;
+        private long offset;
+
+        public Worker(MemorySegment ms, long start, long end) {
+            this.ms = ms.asSlice(start, end - start);
+            this.offset = 0;
+            this.end = end - start;
+        }
+
+        private void parseName(ByteString station) {
+            long start = offset;
+            long pos = -1;
+
+            while (end - offset > 8) {
+                long next = UNSAFE.getLong(ms.address() + offset);
+                pos = find(next, SEMICOLON_MASK);
+                if (pos >= 0) {
+                    offset += pos;
+                    break;
+                }
+                else {
+                    offset += 8;
+                }
+            }
+            if (pos < 0) {
+                while (UNSAFE.getByte(ms.address() + offset++) != ';') {
+                }
+                offset--;
+            }
+
+            int len = (int) (offset - start);
+            station.offset = start;
+            station.len = len;
+            station.hash = 0;
+
+            offset++;
+        }
+
+        long parseNumberFast() {
+            long encodedVal = UNSAFE.getLong(ms.address() + offset);
+
+            var lineEnd = find(encodedVal, LINE_END_MASK);
+            long mask = (1L << (8 * lineEnd)) - 1;
+            mask ^= 0xFFL << (8 * (lineEnd - 2));
+            encodedVal = Long.compress(encodedVal ^ broadcast((byte) 0x30), mask);
+            long numbers2 = reverseBytes((int) encodedVal) >> (8 * (4 - lineEnd + 1));
+            offset += lineEnd + 1;
+            return (numbers2 & 0xFF) + 10 * ((numbers2 >> 8) & 0xFF) + 100 * ((numbers2 >> 16) & 0xFF);
+        }
+
+        long parseNumberSlow() {
+            long val = UNSAFE.getByte(ms.address() + offset++) - '0';
+            byte b;
+            while ((b = UNSAFE.getByte(ms.address() + offset++)) != '.') {
+                val = val * 10 + (b - '0');
+            }
+            b = UNSAFE.getByte(ms.address() + offset);
+            val = val * 10 + (b - '0');
+            offset += 2;
+            return val;
+        }
+
+        long parseNumber() {
+            long val;
+            boolean neg = UNSAFE.getByte(ms.address() + offset) == '-';
+            offset += neg ? 1 : 0;
+
+            if (end - offset > 8) {
+                val = parseNumberFast();
+            }
+            else {
+                val = parseNumberSlow();
+            }
+            val *= neg ? -1 : 1;
+            return val;
+        }
+
+        public TreeMap<String, ResultRow> run() {
+            var resultStore = new ResultStore();
+            var station = new ByteString(ms);
+
+            while (offset < end) {
+                parseName(station);
+                long val = parseNumber();
+                var a = resultStore.get(station);
+                a.min = Math.min(a.min, val);
+                a.max = Math.max(a.max, val);
+                a.sum += val;
+                a.count++;
+            }
+            return resultStore.toMap();
+        }
+    }
+
     public static void main(String[] args) throws Exception {
         Field f = Unsafe.class.getDeclaredField("theUnsafe");
         f.setAccessible(true);
@@ -81,91 +175,18 @@ public class CalculateAverage_roman_r_m {
         long fileSize = new File(FILE).length();
 
         var channel = FileChannel.open(Paths.get(FILE));
-        ms = channel.map(FileChannel.MapMode.READ_ONLY, 0, fileSize, Arena.ofAuto());
+        MemorySegment ms = channel.map(FileChannel.MapMode.READ_ONLY, 0, fileSize, Arena.ofAuto());
 
         int numThreads = fileSize > Integer.MAX_VALUE ? Runtime.getRuntime().availableProcessors() : 1;
         long chunk = fileSize / numThreads;
+
         var result = IntStream.range(0, numThreads)
                 .parallel()
                 .mapToObj(i -> {
                     boolean lastChunk = i == numThreads - 1;
-                    long chunkStart = i == 0 ? 0 : nextNewline(i * chunk) + 1;
-                    long chunkEnd = lastChunk ? fileSize : nextNewline((i + 1) * chunk);
-
-                    var resultStore = new ResultStore();
-                    var station = new ByteString();
-
-                    long offset = chunkStart;
-                    while (offset < chunkEnd) {
-                        long start = offset;
-                        long pos = -1;
-
-                        while (chunkEnd - offset >= 8) {
-                            long next = UNSAFE.getLong(ms.address() + offset);
-                            pos = find(next, SEMICOLON_MASK);
-                            if (pos >= 0) {
-                                offset += pos;
-                                break;
-                            }
-                            else {
-                                offset += 8;
-                            }
-                        }
-                        if (pos < 0) {
-                            while (UNSAFE.getByte(ms.address() + offset++) != ';') {
-                            }
-                            offset--;
-                        }
-
-                        int len = (int) (offset - start);
-                        // TODO can we not copy and use a reference into the memory segment to perform table lookup?
-
-                        station.offset = start;
-                        station.len = len;
-                        station.hash = 0;
-
-                        offset++;
-
-                        long val;
-                        boolean neg = UNSAFE.getByte(ms.address() + offset) == '-';
-                        offset += neg ? 1 : 0;
-
-                        if (!lastChunk || fileSize - offset >= 8) {
-                            long encodedVal = UNSAFE.getLong(ms.address() + offset);
-
-                            // neg =
-                            var lineEnd = find(encodedVal, LINE_END_MASK);
-                            long mask = (1L << (8 * lineEnd)) - 1;
-                            mask ^= 0xFFL << (8 * (lineEnd - 2));
-                            encodedVal = Long.compress(encodedVal ^ broadcast((byte) 0x30), mask);
-                            long numbers2 = reverseBytes((int) encodedVal) >> (8 * (4 - lineEnd + 1));
-                            val = (numbers2 & 0xFF) + 10 * ((numbers2 >> 8) & 0xFF) + 100 * ((numbers2 >> 16) & 0xFF);
-                            offset += lineEnd + 1;
-                        }
-                        else {
-                            val = UNSAFE.getByte(ms.address() + offset++) - '0';
-                            byte b;
-                            while ((b = UNSAFE.getByte(ms.address() + offset++)) != '.') {
-                                val = val * 10 + (b - '0');
-                            }
-                            b = UNSAFE.getByte(ms.address() + offset);
-                            val = val * 10 + (b - '0');
-                            offset += 2;
-                        }
-
-                        if (neg) {
-                            val = -val;
-                        }
-
-                        var a = resultStore.get(station);
-                        a.min = Math.min(a.min, val);
-                        a.max = Math.max(a.max, val);
-                        a.sum += val;
-                        a.count++;
-                    }
-
-                    // System.out.println(STR."Thread \{i}, misses=\{resultStore.misses}/\{resultStore.calls} \{((double) resultStore.misses) / resultStore.calls}");
-                    return resultStore.toMap();
+                    long chunkStart = i == 0 ? 0 : nextNewline(i * chunk, ms) + 1;
+                    long chunkEnd = lastChunk ? fileSize : nextNewline((i + 1) * chunk, ms);
+                    return new Worker(ms, chunkStart, chunkEnd).run();
                 }).reduce((m1, m2) -> {
                     m2.forEach((k, v) -> m1.merge(k, v, ResultRow::merge));
                     return m1;
@@ -176,9 +197,14 @@ public class CalculateAverage_roman_r_m {
 
     static final class ByteString {
 
+        private final MemorySegment ms;
         private long offset;
         private int len = 0;
         private int hash = 0;
+
+        ByteString(MemorySegment ms) {
+            this.ms = ms;
+        }
 
         @Override
         public String toString() {
@@ -188,7 +214,7 @@ public class CalculateAverage_roman_r_m {
         }
 
         public ByteString copy() {
-            var copy = new ByteString();
+            var copy = new ByteString(ms);
             copy.offset = this.offset;
             copy.len = this.len;
             copy.hash = this.hash;
@@ -267,17 +293,12 @@ public class CalculateAverage_roman_r_m {
         private final ByteString[] keys = new ByteString[SIZE];
         private final ResultRow[] values = new ResultRow[SIZE];
 
-        // private long calls = 0;
-        // private long misses = 0;
-
         ResultRow get(ByteString s) {
             int h = s.hashCode();
             int idx = (SIZE - 1) & h;
 
             int i = 0;
-            // int miss = 0;
             while (keys[idx] != null && !keys[idx].equals(s)) {
-                // miss = 1;
                 i++;
                 idx = (idx + i * i) % SIZE;
             }
@@ -292,8 +313,6 @@ public class CalculateAverage_roman_r_m {
                 // TODO see it it makes any difference
                 // keys[idx].offset = s.offset;
             }
-            // calls++;
-            // misses += miss;
             return result;
         }
 
