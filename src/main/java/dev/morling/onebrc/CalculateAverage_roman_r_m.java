@@ -211,10 +211,10 @@ public class CalculateAverage_roman_r_m {
 
             long base1 = ms.address() + offset;
             long base2 = ms.address() + that.offset;
-            for (; i + 3 < len; i += 4) {
-                int i1 = UNSAFE.getInt(base1 + i);
-                int i2 = UNSAFE.getInt(base2 + i);
-                if (i1 != i2) {
+            for (; i + 7 < len; i += 8) {
+                long l1 = UNSAFE.getLong(base1 + i);
+                long l2 = UNSAFE.getLong(base2 + i);
+                if (l1 != l2) {
                     return false;
                 }
             }
