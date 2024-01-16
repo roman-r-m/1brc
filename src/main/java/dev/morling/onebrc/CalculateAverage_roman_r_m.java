@@ -137,8 +137,8 @@ public class CalculateAverage_roman_r_m {
 
         long parseNumber() {
             long val;
-            boolean neg = UNSAFE.getByte(ms.address() + offset) == '-';
-            offset += neg ? 1 : 0;
+            int neg = 1 - Integer.bitCount(UNSAFE.getByte(ms.address() + offset) & 0x10);
+            offset += neg;
 
             if (end - offset > 8) {
                 val = parseNumberFast();
@@ -146,7 +146,7 @@ public class CalculateAverage_roman_r_m {
             else {
                 val = parseNumberSlow();
             }
-            val *= neg ? -1 : 1;
+            val *= 1 - 2 * neg;
             return val;
         }
 
