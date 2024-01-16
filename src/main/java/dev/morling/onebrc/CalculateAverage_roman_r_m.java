@@ -244,6 +244,11 @@ public class CalculateAverage_roman_r_m {
                     return false;
                 }
             }
+            if (len >= 8) {
+                long l1 = UNSAFE.getLong(base1 + len - 8);
+                long l2 = UNSAFE.getLong(base2 + len - 8);
+                return l1 == l2;
+            }
             for (; i < len; i++) {
                 byte i1 = UNSAFE.getByte(base1 + i);
                 byte i2 = UNSAFE.getByte(base2 + i);
