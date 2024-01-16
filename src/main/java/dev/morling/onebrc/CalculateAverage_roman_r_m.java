@@ -55,11 +55,6 @@ public class CalculateAverage_roman_r_m {
         return match != 0 ? firstSetByteIndex(match) : -1;
     }
 
-    static int reverseBytes(int value) {
-        return (value & 0x000000FF) << 24 | (value & 0x0000FF00) << 8 |
-                (value & 0x00FF0000) >> 8 | (value & 0xFF000000) >> 24;
-    }
-
     static long nextNewline(long from, MemorySegment ms) {
         long start = from;
         long i;
@@ -111,16 +106,28 @@ public class CalculateAverage_roman_r_m {
             offset++;
         }
 
+        private final byte[][] COEFFS = new byte[2][];
+        {
+            COEFFS[0] = new byte[]{ 10, 0, 1, 0 };
+            COEFFS[1] = new byte[]{ 100, 10, 0, 1 };
+        }
+
         long parseNumberFast() {
             long encodedVal = UNSAFE.getLong(ms.address() + offset);
 
-            var lineEnd = find(encodedVal, LINE_END_MASK);
-            long mask = (1L << (8 * lineEnd)) - 1;
-            mask ^= 0xFFL << (8 * (lineEnd - 2));
-            encodedVal = Long.compress(encodedVal ^ broadcast((byte) 0x30), mask);
-            long numbers2 = reverseBytes((int) encodedVal) >> (8 * (4 - lineEnd + 1));
-            offset += lineEnd + 1;
-            return (numbers2 & 0xFF) + 10 * ((numbers2 >> 8) & 0xFF) + 100 * ((numbers2 >> 16) & 0xFF);
+            var len = find(encodedVal, LINE_END_MASK);
+            offset += len + 1;
+
+            encodedVal ^= broadcast((byte) 0x30);
+
+            var coeff = COEFFS[(int) (len - 3)];
+
+            long a = (encodedVal & 0xFF) * coeff[0];
+            long b = ((encodedVal & 0xFF00) >>> 8) * coeff[1];
+            long c = ((encodedVal & 0xFF0000L) >>> 16) * coeff[2];
+            long d = ((encodedVal & 0xFF000000L) >>> 24) * coeff[3];
+
+            return a + b + c + d;
         }
 
         long parseNumberSlow() {
